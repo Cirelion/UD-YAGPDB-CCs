@@ -1,0 +1,54 @@
+{{/*
+	Image Contest -- Reaction Guard
+	Trigger Type: Reaction
+	Trigger: Added Only
+	Restriction: Optionally restrict to your contest forum channel via CC group.
+
+	Two jobs:
+	  1. Submission phase: removes ALL reactions to prevent early voting.
+	  2. Voting phase: removes self-votes (reacting to your own submission).
+*/}}
+
+{{/* ========== CONFIGURATION ========== */}}
+{{ $FORUM_CHANNEL := 1482642684832256031 }}
+{{/* ========== END CONFIGURATION ========== */}}
+
+{{/* Skip bot reactions */}}
+{{ if .User.Bot }}{{ return }}{{ end }}
+
+{{/* Only act in threads within the contest forum */}}
+{{ if ne .Channel.ParentID $FORUM_CHANNEL }}{{ return }}{{ end }}
+
+{{/* Get this thread's contest state */}}
+{{ $tState := sdict }}
+{{ with (dbGet 0 (printf "ic_thread_%d" .Channel.ID)).Value }}{{ $tState = sdict . }}{{ end }}
+{{ $phase := "" }}
+{{ with $tState.Get "phase" }}{{ $phase = str . }}{{ end }}
+
+{{/* Only act during submission or voting phase */}}
+{{ if and (ne $phase "submission") (ne $phase "voting") }}{{ return }}{{ end }}
+
+{{/* Build emoji string for removal */}}
+{{ $emoji := .Reaction.Emoji.Name }}
+{{ if .Reaction.Emoji.ID }}
+	{{ $emoji = printf "%s:%d" .Reaction.Emoji.Name .Reaction.Emoji.ID }}
+{{ end }}
+
+{{/* Submission phase: remove ALL reactions */}}
+{{ if eq $phase "submission" }}
+	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+	{{ $m := sendMessageRetID nil (printf "<@%d>, voting hasn't opened yet -- reactions are disabled during the submission phase." .User.ID) }}
+	{{ deleteMessage nil $m 6 }}
+	{{ return }}
+{{ end }}
+
+{{/* Voting phase: remove self-votes */}}
+{{ $subs := sdict }}
+{{ with (dbGet 0 (printf "ic_subs_%d" .Channel.ID)).Value }}{{ $subs = sdict . }}{{ end }}
+{{ $uid := str .User.ID }}
+{{ $entry := $subs.Get $uid }}
+{{ if and $entry (eq (str (sdict $entry).msgID) (str .Reaction.MessageID)) }}
+	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+	{{ $m := sendMessageRetID nil (printf "<@%d>, you can't vote for your own submission." .User.ID) }}
+	{{ deleteMessage nil $m 6 }}
+{{ end }}

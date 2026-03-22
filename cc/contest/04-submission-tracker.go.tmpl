@@ -1,0 +1,106 @@
+{{/*
+	Image Contest -- Submission Tracker & Channel Cleaner
+	Trigger Type: Regex
+	Trigger: \A
+	Restriction: Set this CC to run in BOTH your contest forum channel
+	             AND your suggestions channel.
+
+	Three jobs:
+	  1. Suggestions channel: deletes all non-bot messages to keep it clean.
+	     (The suggest command's embeds stay since they're posted by the bot.)
+	  2. Contest forum threads (submission phase): tracks submissions, enforces
+	     one entry per user, flags mod/admin entries.
+	  3. Contest forum threads (voting phase): deletes messages to prevent posting.
+*/}}
+
+{{/* ========== CONFIGURATION ========== */}}
+{{ $FORUM_CHANNEL := 1482642684832256031 }}
+{{ $SUGGESTIONS_CHANNEL := 1482647243730321611 }}
+{{ $GENERAL_DISCUSSION_CHANNEL := 1482646763449094248 }} {{/* Channel/thread ID for general discussion -- used in redirect for text-only posts */}}
+
+{{/* Role IDs for mods/admins -- their submissions are tracked but excluded from winning */}}
+{{ $MOD_ROLES := cslice 1012902782744920075 1011046467164700743 }}
+{{/* ========== END CONFIGURATION ========== */}}
+
+{{/* Skip bot messages */}}
+{{ if .User.Bot }}{{ return }}{{ end }}
+
+{{/* === SUGGESTIONS CHANNEL: Delete all human messages to keep it clean === */}}
+{{/* Threads attached to suggestion embeds are allowed (ParentID = suggestions channel) */}}
+{{ if eq .Channel.ID $SUGGESTIONS_CHANNEL }}
+	{{ deleteTrigger 0 }}
+	{{ $m := sendMessageRetID nil (printf "<@%d>, use `%ssuggest Title | Description` to submit a prompt suggestion." .User.ID .ServerPrefix) }}
+	{{ deleteMessage nil $m 8 }}
+	{{ return }}
+{{ end }}
+{{ if eq .Channel.ParentID $SUGGESTIONS_CHANNEL }}{{ return }}{{ end }}
+
+{{/* Only run in threads within the contest forum */}}
+{{ if ne .Channel.ParentID $FORUM_CHANNEL }}{{ return }}{{ end }}
+
+{{/* Get this thread's contest state -- if none, this thread has no active contest */}}
+{{ $threadKey := printf "ic_thread_%d" .Channel.ID }}
+{{ $tState := sdict }}
+{{ with (dbGet 0 $threadKey).Value }}{{ $tState = sdict . }}{{ end }}
+{{ $phase := "" }}
+{{ with $tState.Get "phase" }}{{ $phase = str . }}{{ end }}
+{{ if not $phase }}{{ return }}{{ end }}
+
+{{/* === SUBMISSION PHASE === */}}
+{{ if eq $phase "submission" }}
+
+	{{/* Only images count as submissions -- file uploads or image URLs */}}
+	{{ $hasImage := false }}
+	{{ if .Message.Attachments }}{{ $hasImage = true }}{{ end }}
+	{{ if not $hasImage }}
+		{{ if reFind `(?i)https?://\S+\.(?:png|jpe?g|gif|webp)` .Message.Content }}{{ $hasImage = true }}{{ end }}
+	{{ end }}
+	{{ if not $hasImage }}
+		{{ deleteTrigger 0 }}
+		{{ $redirect := "This thread is for image submissions only." }}
+		{{ if $GENERAL_DISCUSSION_CHANNEL }}
+			{{ $redirect = printf "This thread is for image submissions only. For general chat, head to <#%d>." $GENERAL_DISCUSSION_CHANNEL }}
+		{{ end }}
+		{{ $m := sendMessageRetID nil $redirect }}
+		{{ deleteMessage nil $m 8 }}
+		{{ return }}
+	{{ end }}
+
+	{{ $subsKey := printf "ic_subs_%d" .Channel.ID }}
+	{{ $subs := sdict }}
+	{{ with (dbGet 0 $subsKey).Value }}{{ $subs = sdict . }}{{ end }}
+	{{ $uid := str .User.ID }}
+
+	{{/* Enforce one entry per user -- but allow re-entry if they deleted their original */}}
+	{{ $existing := $subs.Get $uid }}
+	{{ if $existing }}
+		{{ $oldMsg := false }}
+		{{ try }}
+			{{ $oldMsg = getMessage nil (toInt (sdict $existing).msgID) }}
+		{{ catch }}
+		{{ end }}
+		{{ if $oldMsg }}
+			{{/* Original still exists -- block the duplicate */}}
+			{{ deleteTrigger 0 }}
+			{{ $m := sendMessageRetID nil "Multiple entries are not allowed. Please delete your current entry if you wish to post something else." }}
+			{{ deleteMessage nil $m 8 }}
+			{{ return }}
+		{{ end }}
+		{{/* Original is gone -- fall through to track the new one */}}
+	{{ end }}
+
+	{{/* Check if user has a mod/admin role */}}
+	{{ $isMod := false }}
+	{{ range .Member.Roles }}
+		{{- if in $MOD_ROLES . }}{{ $isMod = true }}{{ end -}}
+	{{ end }}
+
+	{{ $subs.Set $uid (sdict "msgID" (str .Message.ID) "isMod" $isMod) }}
+	{{ dbSet 0 $subsKey $subs }}
+
+{{/* === VOTING PHASE: Delete the message (no posting allowed) === */}}
+{{ else if eq $phase "voting" }}
+	{{ deleteTrigger 0 }}
+
+{{/* === ANY OTHER PHASE: Ignore === */}}
+{{ end }}

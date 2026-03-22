@@ -1,0 +1,163 @@
+{{/*
+	Image Contest -- Contest Cycle
+	Trigger Type: Crontab
+	Trigger: Set your preferred schedule (e.g. "0 12 * * *" for daily at noon UTC)
+
+	Runs on schedule. If no contest is active, picks the top-voted prompt
+	suggestion, creates a forum thread, and starts the submission window.
+	Skips if a contest is already running or no prompts exist.
+*/}}
+
+{{/* ========== CONFIGURATION ========== */}}
+{{ $FORUM_CHANNEL := 1482642684832256031 }}
+{{ $SUGGESTIONS_CHANNEL := 1482647243730321611 }}
+{{ $PHASE_HANDLER_CC_ID := 10 }}
+{{ $SUGGESTION_EMOJI := "❤️" }}
+{{ $CONTEST_TAG := "" }}            {{/* Optional: forum tag name to apply (empty to skip) */}}
+{{ $EMBED_COLOR := 0x9B59B6 }}      {{/* Embed color */}}
+{{ $SUBMISSION_HOURS := 24 }}       {{/* Hours the submission window stays open */}}
+{{ $VOTING_HOURS := 24 }}           {{/* Hours the voting window stays open (used for Tallied timestamp) */}}
+{{/* ========== END CONFIGURATION ========== */}}
+
+{{/* Check if a submission phase is already running */}}
+{{ if (dbGet 0 "ic_active_sub") }}
+	{{ return }}
+{{ end }}
+
+{{/* Get all prompt suggestions */}}
+{{ $prompts := dbGetPattern 0 "ic_prompt_%" 100 0 }}
+{{ if not $prompts }}
+	{{ return }}
+{{ end }}
+
+{{/* Count votes on each prompt by checking message reactions */}}
+{{ $bestPrompt := sdict }}
+{{ $bestVotes := -1 }}
+{{ range $prompts }}
+	{{- $data := sdict .Value -}}
+	{{- $msgID := toInt $data.msgID -}}
+	{{- $chID := toInt $data.channelID -}}
+	{{- $votes := 0 -}}
+	{{- try -}}
+		{{- $msg := getMessage $chID $msgID -}}
+		{{- if $msg -}}
+			{{- with $msg.Reactions -}}
+				{{- range . -}}
+					{{- if eq .Emoji.Name $SUGGESTION_EMOJI -}}
+						{{- $votes = toInt (max 0 (sub .Count 1)) -}}
+					{{- end -}}
+				{{- end -}}
+			{{- end -}}
+		{{- end -}}
+	{{- catch -}}
+	{{- end -}}
+	{{- if gt $votes $bestVotes -}}
+		{{- $bestVotes = $votes -}}
+		{{- $bestPrompt = $data -}}
+	{{- end -}}
+{{ end }}
+
+{{ if not $bestPrompt.title }}
+	{{ return }}
+{{ end }}
+
+{{/* Increment round counter */}}
+{{ $round := toInt (dbIncr 0 "ic_round" 1) }}
+
+{{/* Create the forum thread */}}
+{{ $threadOpts := sdict "slowmode" 0 }}
+{{ if $CONTEST_TAG }}
+	{{ $threadOpts.Set "tags" $CONTEST_TAG }}
+{{ end }}
+
+{{ $dateStr := formatTime currentTime "2006-01-02" }}
+{{ $threadTitle := printf "%s %s" $dateStr $bestPrompt.title }}
+{{ if gt (len $threadTitle) 100 }}
+	{{ $threadTitle = printf "%s %s..." $dateStr (slice (str $bestPrompt.title) 0 (toInt (min (sub 96 (len $dateStr)) (len (str $bestPrompt.title))))) }}
+{{ end }}
+
+{{/* Compute timestamps */}}
+{{ $startUnix := toInt currentTime.Unix }}
+{{ $endUnix := toInt (currentTime.Add (toDuration (printf "%dh" $SUBMISSION_HOURS))).Unix }}
+{{ $talliedUnix := toInt (currentTime.Add (toDuration (printf "%dh" (add $SUBMISSION_HOURS $VOTING_HOURS)))).Unix }}
+
+{{/* Build the post body to match the existing contest format */}}
+{{ $challengeTitle := str $bestPrompt.title }}
+{{ $challengeDesc := "" }}
+{{ with $bestPrompt.desc }}{{ $challengeDesc = str . }}{{ end }}
+
+{{ $opening := printf "Today's challenge is \"%s\"." $challengeTitle }}
+
+{{ $challengeBody := "" }}
+{{ if $challengeDesc }}
+	{{ $challengeBody = $challengeDesc }}
+{{ end }}
+
+{{ $rules := print "**Rules:**\n"
+	"- All server wide rules apply, including but not limited to: zero tolerance on CP, Cub, deepfakes, and depictions of children.\n"
+	"- Keep general discussion/questions regarding the challenges to the \"General Discussion\" group posted in the parent channel\n"
+	"- Any size images are allowed\n"
+	"- Your submission can be from any AI generator\n"
+	"- You may only submit one entry per contest\n"
+	"- While we'd love to see your prompts, it's in no way mandatory.\n"
+	"- Mods/Admins can submit an entry, but will not be counted and can't win\n"
+	"- A winner will be decided by most reactions. You may react to more than one image, but not more than once per image\n"
+	"- A winner will be announced no sooner than one day after the competition ends"
+}}
+
+{{ $timing := printf "Started    <t:%d:R>\nEnding    <t:%d:R>\nTallied    <t:%d:R>" $startUnix $endUnix $talliedUnix }}
+
+{{/* Forum post body: opening + description only (rules go in a follow-up) */}}
+{{ $postBody := $opening }}
+{{ if $challengeBody }}
+	{{ $postBody = printf "%s\n\n%s" $opening $challengeBody }}
+{{ end }}
+{{ if gt (len $postBody) 2000 }}
+	{{ $postBody = slice $postBody 0 1997 | printf "%s..." }}
+{{ end }}
+
+{{ $thread := createForumPost $FORUM_CHANNEL $threadTitle $postBody $threadOpts }}
+
+{{/* Post rules and timing as a follow-up in the thread */}}
+{{ $rulesAndTiming := printf "%s\n\n%s" $rules $timing }}
+{{ sendMessage $thread.ID $rulesAndTiming }}
+
+{{/* Set long auto-archive to prevent premature archival */}}
+{{ editThread $thread.ID (sdict "auto_archive_duration" 10080) }}
+
+{{/* Store per-thread contest state */}}
+{{ $threadState := sdict
+	"phase" "submission"
+	"round" $round
+	"prompt" (str $challengeTitle)
+	"promptAuthor" (str $bestPrompt.authorID)
+	"startedAt" (str currentTime)
+}}
+{{ dbSet 0 "ic_active_sub" (str $thread.ID) }}
+{{ dbSet 0 (printf "ic_thread_%d" $thread.ID) $threadState }}
+{{ dbSet 0 (printf "ic_subs_%d" $thread.ID) (sdict) }}
+
+{{/* Schedule the voting phase */}}
+{{ $delay := mult $SUBMISSION_HOURS 3600 }}
+{{ scheduleUniqueCC $PHASE_HANDLER_CC_ID $SUGGESTIONS_CHANNEL $delay
+	(printf "ic_vote_%d" $round)
+	(sdict "action" "open_voting" "threadID" (str $thread.ID) "round" $round "prompt" (str $challengeTitle) "promptAuthor" (str $bestPrompt.authorID))
+}}
+
+{{/* Delete only the winning prompt's DB entry -- losers stay for next cycle */}}
+{{ dbDel 0 (printf "ic_prompt_%s" $bestPrompt.msgID) }}
+{{ deleteMessage (toInt $bestPrompt.channelID) (toInt $bestPrompt.msgID) 0 }}
+
+{{/* Announce in suggestions channel -- auto-deletes after 24h */}}
+{{ $announceMsgID := sendMessageRetID $SUGGESTIONS_CHANNEL (cembed
+	"title" "Today's Prompt Has Been Selected!"
+	"description" (printf "**\"%s\"**\n\nSuggested by <@%s> -- Submit your entry here: <#%d>\n\nFeel free to `%ssuggest` new prompts for the next round."
+		$challengeTitle
+		(str $bestPrompt.authorID)
+		$thread.ID
+		.ServerPrefix
+	)
+	"color" 0x2ECC71
+	"timestamp" currentTime
+) }}
+{{ deleteMessage $SUGGESTIONS_CHANNEL $announceMsgID 86400 }}

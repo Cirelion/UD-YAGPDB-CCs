@@ -1,0 +1,56 @@
+{{/*
+	Image Contest -- Remove Suggestion
+	Trigger Type: Command
+	Trigger: removesuggestion
+	Usage: -removesuggestion <message ID>
+
+	Allows mods/admins to remove a prompt suggestion by deleting both
+	the embed message and the DB entry. Reply to the suggestion embed
+	or pass its message ID as an argument.
+*/}}
+
+{{/* ========== CONFIGURATION ========== */}}
+{{ $SUGGESTIONS_CHANNEL := 1482647243730321611 }}
+{{ $MOD_ROLES := cslice 1012902782744920075 1011046467164700743 }}
+{{/* ========== END CONFIGURATION ========== */}}
+
+{{ deleteTrigger 0 }}
+
+{{/* Check mod permission */}}
+{{ $isMod := false }}
+{{ range .Member.Roles }}
+	{{- if in $MOD_ROLES . }}{{ $isMod = true }}{{ end -}}
+{{ end }}
+{{ if not $isMod }}
+	{{ $m := sendMessageRetID nil "You don't have permission to remove suggestions." }}
+	{{ deleteMessage nil $m 5 }}
+	{{ return }}
+{{ end }}
+
+{{/* Get the target message ID from reply or argument */}}
+{{ $targetID := "" }}
+{{ if .Message.ReferencedMessage }}
+	{{ $targetID = str .Message.ReferencedMessage.ID }}
+{{ else if .CmdArgs }}
+	{{ $targetID = index .CmdArgs 0 }}
+{{ else }}
+	{{ $m := sendMessageRetID nil (printf "Reply to a suggestion embed, or pass the message ID.\nUsage: `%sremovesuggestion <message ID>`" .ServerPrefix) }}
+	{{ deleteMessage nil $m 5 }}
+	{{ return }}
+{{ end }}
+
+{{/* Delete the DB entry */}}
+{{ $key := printf "ic_prompt_%s" $targetID }}
+{{ $entry := dbGet 0 $key }}
+{{ if not $entry }}
+	{{ $m := sendMessageRetID nil "No suggestion found for that message ID." }}
+	{{ deleteMessage nil $m 5 }}
+	{{ return }}
+{{ end }}
+{{ dbDel 0 $key }}
+
+{{/* Delete the embed message */}}
+{{ deleteMessage $SUGGESTIONS_CHANNEL (toInt $targetID) 0 }}
+
+{{ $m := sendMessageRetID nil "Suggestion removed." }}
+{{ deleteMessage nil $m 3 }}
