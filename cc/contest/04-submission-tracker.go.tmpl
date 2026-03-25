@@ -28,6 +28,11 @@
 {{/* === SUGGESTIONS CHANNEL: Delete all human messages to keep it clean === */}}
 {{/* Threads attached to suggestion embeds are allowed (ParentID = suggestions channel) */}}
 {{ if eq .Channel.ID $SUGGESTIONS_CHANNEL }}
+	{{/* Don't interfere with bot commands (case-insensitive) */}}
+	{{ $content := lower .Message.Content }}
+	{{ if or (hasPrefix $content (printf "%ssuggest" .ServerPrefix)) (hasPrefix $content (printf "%sremovesuggestion" .ServerPrefix)) }}
+		{{ return }}
+	{{ end }}
 	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil (printf "<@%d>, use `%ssuggest Title | Description` to submit a prompt suggestion." .User.ID .ServerPrefix) }}
 	{{ deleteMessage nil $m 8 }}

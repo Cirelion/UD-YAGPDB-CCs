@@ -1,36 +1,17 @@
-{{/*
-	Image Contest -- Phase Handler
-	Trigger Type: Command
-	Trigger: ic_internal
-	WARNING: This CC is called ONLY via scheduleUniqueCC. Do NOT run manually.
-
-	Handles three actions:
-	  - open_voting  -- Lock submissions, pre-react vote emojis, open voting window
-	  - pick_winner  -- Count votes, award role, announce winner, close thread
-	  - remove_role  -- Remove winner role after expiry
-*/}}
+{{/* Phase Handler -- called ONLY via scheduleUniqueCC. Actions: open_voting, pick_winner, remove_role */}}
 
 {{/* ========== CONFIGURATION ========== */}}
 {{ $WINNERS_CHANNEL := 1482692349896167588 }}
-{{ $WINNER_ROLE_ID := 1484483895251570728 }}           {{/* REQUIRED: Fill in once the winner role is created */}}
+{{ $STARBOARD_CHANNEL := 1053359719806423162 }}
+{{ $WINNER_ROLE_ID := 1484483895251570728 }}
 {{ $ROLE_DURATION_DAYS := 3 }}
 {{ $VOTING_HOURS := 24 }}
 {{ $SUGGESTIONS_CHANNEL := 1482647243730321611 }}
-{{ $EMBED_COLOR := 0x9B59B6 }}       {{/* Embed color */}}
-{{ $WINNER_COLOR := 0xF1C40F }}      {{/* Winner embed color (gold) */}}
-
-{{/*
-	Vote emojis -- the bot pre-reacts with these on each submission.
-	All reactions matching these emojis count toward the vote total.
-	WARNING: Each emoji x submission = 1 API call. Keep submissions x emojis < 100.
-
-	Unicode emoji: "❤️", "🔥", "⭐"
-	Custom emoji:  "emojiname:123456789"
-*/}}
+{{ $EMBED_COLOR := 0x9B59B6 }}
+{{ $WINNER_COLOR := 0xF1C40F }}
 {{ $VOTE_EMOJIS := cslice "❤️" }}
 {{/* ========== END CONFIGURATION ========== */}}
 
-{{/* Guard: only run via scheduleUniqueCC */}}
 {{ if not .ExecData }}{{ return }}{{ end }}
 
 {{ $action := str .ExecData.action }}
@@ -39,75 +20,72 @@
 {{ $round := 0 }}
 {{ with .ExecData.round }}{{ $round = toInt . }}{{ end }}
 
-{{/* Build vote emoji name set for matching against .Reactions */}}
 {{ $voteNames := cslice }}
 {{ range $VOTE_EMOJIS }}
-	{{- $parts := split . ":" -}}
-	{{- $voteNames = $voteNames.Append (index $parts 0) -}}
+	{{- $voteNames = $voteNames.Append (index (split . ":") 0) -}}
 {{ end }}
 
-{{/* ===== ACTION: OPEN VOTING ===== */}}
+{{/* ===== OPEN VOTING ===== */}}
 {{ if eq $action "open_voting" }}
 
-	{{/* Free up submission slot so the next contest can start */}}
 	{{ dbDel 0 "ic_active_sub" }}
 
-	{{/* Update this thread's state to voting */}}
 	{{ $threadKey := printf "ic_thread_%d" $threadID }}
 	{{ $tState := sdict }}
 	{{ with (dbGet 0 $threadKey).Value }}{{ $tState = sdict . }}{{ end }}
 	{{ $tState.Set "phase" "voting" }}
 	{{ dbSet 0 $threadKey $tState }}
 
-	{{/* Get all tracked submissions (sdict: userID -> sdict with msgID, isMod) */}}
 	{{ $subs := sdict }}
 	{{ with (dbGet 0 (printf "ic_subs_%d" $threadID)).Value }}{{ $subs = sdict . }}{{ end }}
 
-	{{/* Pre-react with vote emojis on each submission (including mod entries) */}}
 	{{ range $uid, $data := $subs }}
-		{{- $subData := sdict $data -}}
-		{{- $msgID := toInt $subData.msgID -}}
+		{{- $msgID := toInt (sdict $data).msgID -}}
 		{{- range $VOTE_EMOJIS -}}
 			{{- addMessageReactions $threadID $msgID . -}}
 		{{- end -}}
 	{{ end }}
 
-	{{/* Post voting announcement in the thread */}}
 	{{ $emojiList := "" }}
 	{{ range $VOTE_EMOJIS }}{{- $emojiList = printf "%s %s" $emojiList . -}}{{ end }}
-	{{ $emojiList = trimSpace $emojiList }}
 	{{ sendMessage $threadID (cembed
 		"title" "Voting is Now Open!"
 		"description" (printf "**Submissions are closed.** Time to vote!\n\nReact with %s on your favorite entries.\n\n**Voting closes** <t:%d:R>\n\nThe entry with the most votes wins!"
-			$emojiList
+			(trimSpace $emojiList)
 			(toInt (currentTime.Add (toDuration (printf "%dh" $VOTING_HOURS))).Unix)
 		)
 		"color" $EMBED_COLOR
 		"timestamp" currentTime
 	) }}
 
-	{{/* Schedule winner selection */}}
+	{{ $prompt := "" }}
+	{{ with .ExecData.prompt }}{{ $prompt = str . }}{{ end }}
+	{{ if not $prompt }}{{ with ($tState.Get "prompt") }}{{ $prompt = str . }}{{ end }}{{ end }}
+	{{ $promptAuthor := "" }}
+	{{ with .ExecData.promptAuthor }}{{ $promptAuthor = str . }}{{ end }}
+	{{ if not $promptAuthor }}{{ with ($tState.Get "promptAuthor") }}{{ $promptAuthor = str . }}{{ end }}{{ end }}
+
 	{{ $delay := mult $VOTING_HOURS 3600 }}
 	{{ scheduleUniqueCC .CCID $SUGGESTIONS_CHANNEL $delay
 		(printf "ic_winner_%d" $round)
-		(sdict "action" "pick_winner" "threadID" (str $threadID) "round" $round "prompt" (str .ExecData.prompt) "promptAuthor" (str .ExecData.promptAuthor))
+		(sdict "action" "pick_winner" "threadID" (str $threadID) "round" $round "prompt" $prompt "promptAuthor" $promptAuthor)
 	}}
 
-{{/* ===== ACTION: PICK WINNER ===== */}}
+{{/* ===== PICK WINNER ===== */}}
 {{ else if eq $action "pick_winner" }}
 
-	{{/* Get submissions for this thread */}}
 	{{ $subsKey := printf "ic_subs_%d" $threadID }}
 	{{ $subs := sdict }}
 	{{ with (dbGet 0 $subsKey).Value }}{{ $subs = sdict . }}{{ end }}
 
 	{{ $prompt := "" }}
 	{{ with .ExecData.prompt }}{{ $prompt = str . }}{{ end }}
+	{{ if not $prompt }}
+		{{ with (dbGet 0 (printf "ic_thread_%d" $threadID)).Value }}{{ with (sdict .).Get "prompt" }}{{ $prompt = str . }}{{ end }}{{ end }}
+	{{ end }}
 
-	{{/* Count votes on each submission, skipping mod/admin entries */}}
 	{{ $maxVotes := 0 }}
 	{{ $winners := cslice }}
-
 	{{ range $uid, $data := $subs }}
 		{{- $subData := sdict $data -}}
 		{{- if $subData.isMod }}{{ continue }}{{ end -}}
@@ -117,9 +95,7 @@
 		{{- try -}}
 			{{- $msg := getMessage $threadID $msgID -}}
 			{{- if $msg -}}
-				{{- with $msg.Attachments -}}
-					{{- $imageURL = (index . 0).URL -}}
-				{{- end -}}
+				{{- with $msg.Attachments }}{{ $imageURL = (index . 0).URL }}{{ end -}}
 				{{- with $msg.Reactions -}}
 					{{- range . -}}
 						{{- if in $voteNames .Emoji.Name -}}
@@ -129,7 +105,6 @@
 				{{- end -}}
 			{{- end -}}
 		{{- catch -}}
-			{{- $votes = 0 -}}
 		{{- end -}}
 		{{- $entry := sdict "userID" $uid "msgID" (str $msgID) "votes" $votes "imageURL" $imageURL -}}
 		{{- if gt $votes $maxVotes -}}
@@ -141,21 +116,17 @@
 	{{ end }}
 
 	{{ if not (len $winners) }}
-		{{/* No votes at all -- announce no winner */}}
 		{{ sendMessage $WINNERS_CHANNEL (cembed
 			"title" (printf "Challenge #%d - No Winner" $round)
-			"description" (printf "**Prompt:** %s\n\nNo votes were cast this round. Better luck next time!" $prompt)
-			"color" 0x95A5A6
-			"timestamp" currentTime
+			"description" (printf "**Prompt:** %s\n\nNo votes were cast this round." $prompt)
+			"color" 0x95A5A6 "timestamp" currentTime
 		) }}
-		{{/* Close and lock the thread, clean up per-thread state */}}
 		{{ closeThread $threadID true }}
 		{{ dbDel 0 (printf "ic_thread_%d" $threadID) }}
 		{{ dbDel 0 $subsKey }}
 		{{ return }}
 	{{ end }}
 
-	{{/* Give winner role to all winners */}}
 	{{ $winnerMentions := cslice }}
 	{{ $winnerIDs := cslice }}
 	{{ range $winners }}
@@ -165,7 +136,6 @@
 		{{- $winnerIDs = $winnerIDs.Append (str .userID) -}}
 	{{ end }}
 
-	{{/* Build winner announcement */}}
 	{{ $winnerText := "" }}
 	{{ range $i, $m := $winnerMentions }}
 		{{- if $i }}{{ $winnerText = printf "%s, %s" $winnerText $m }}{{ else }}{{ $winnerText = str $m }}{{ end -}}
@@ -180,12 +150,10 @@
 	{{ $winnerEmbed := sdict
 		"title" (printf "Challenge #%d Winner!" $round)
 		"description" (printf "**Prompt:** %s\n\n**Winner(s):** %s\n**Votes:** %s\n\n[View Contest Thread](https://discord.com/channels/%d/%d)\n\nCongratulations!" $prompt $winnerText $voteText .Guild.ID $threadID)
-		"color" $WINNER_COLOR
-		"timestamp" currentTime
+		"color" $WINNER_COLOR "timestamp" currentTime
 		"footer" (sdict "text" (printf "Winner role expires in %d day(s)" $ROLE_DURATION_DAYS))
 	}}
 
-	{{/* Build embed list: main announcement + one image embed per winner */}}
 	{{ $embeds := cslice (cembed $winnerEmbed) }}
 	{{ range $winners }}
 		{{- if .imageURL -}}
@@ -193,35 +161,31 @@
 		{{- end -}}
 	{{ end }}
 
-	{{/* Post to winners channel */}}
-	{{ sendMessage $WINNERS_CHANNEL (complexMessage "embed" $embeds) }}
+	{{ $winnerMsg := complexMessage "embed" $embeds }}
+	{{ sendMessage $WINNERS_CHANNEL $winnerMsg }}
+	{{ sendMessage $STARBOARD_CHANNEL $winnerMsg }}
 
-	{{/* Post summary in the contest thread, then close and lock */}}
 	{{ sendMessage $threadID (cembed
 		"title" "Contest Complete!"
-		"description" (printf "**Winner(s):** %s with %s\n\nThank you all for participating! Check out the winners channel for the full announcement." $winnerText $voteText)
+		"description" (printf "**Winner(s):** %s with %s\n\nThank you all for participating!" $winnerText $voteText)
 		"color" $WINNER_COLOR
 	) }}
 	{{ closeThread $threadID true }}
 
-	{{/* Clean up per-thread state */}}
 	{{ dbDel 0 (printf "ic_thread_%d" $threadID) }}
 	{{ dbDel 0 $subsKey }}
 
-	{{/* Schedule role removal */}}
 	{{ $roleDelay := mult 86400 $ROLE_DURATION_DAYS }}
 	{{ scheduleUniqueCC .CCID $SUGGESTIONS_CHANNEL $roleDelay
 		(printf "ic_role_%d" $round)
 		(sdict "action" "remove_role" "winnerIDs" $winnerIDs "roleID" $WINNER_ROLE_ID)
 	}}
 
-{{/* ===== ACTION: REMOVE ROLE ===== */}}
+{{/* ===== REMOVE ROLE ===== */}}
 {{ else if eq $action "remove_role" }}
 
-	{{ $roleID := toInt .ExecData.roleID }}
-	{{ $winnerIDs := .ExecData.winnerIDs }}
-	{{ range $winnerIDs }}
-		{{- takeRoleID (toInt .) $roleID -}}
+	{{ range .ExecData.winnerIDs }}
+		{{- takeRoleID (toInt .) (toInt $.ExecData.roleID) -}}
 	{{ end }}
 
 {{ end }}

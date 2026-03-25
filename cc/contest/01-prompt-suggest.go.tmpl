@@ -16,17 +16,16 @@
 {{ $EMBED_COLOR := 0x9B59B6 }}   {{/* Embed color */}}
 {{/* ========== END CONFIGURATION ========== */}}
 
-{{/* Always delete the trigger -- the tracker CC also does this, but belt-and-suspenders */}}
-{{ deleteTrigger 0 }}
-
-{{/* Error responses auto-delete after 5s so the suggestions channel stays clean */}}
+{{/* Error responses auto-delete so the suggestions channel stays clean */}}
 {{ if not .CmdArgs }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil (printf "Usage: `%ssuggest Post Title | Description`\nExample: `%ssuggest Goth Grinch | The Grinch dressed in dramatic goth style -- black clothes, chains, piercings.`\nBoth a title and description are required, separated by `|`." .ServerPrefix .ServerPrefix) }}
 	{{ deleteMessage nil $m 8 }}
 	{{ return }}
 {{ end }}
 
 {{ if ne .Channel.ID $SUGGESTIONS_CHANNEL }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil (printf "This command can only be used in <#%d>." $SUGGESTIONS_CHANNEL) }}
 	{{ deleteMessage nil $m 5 }}
 	{{ return }}
@@ -37,6 +36,7 @@
 {{ $parts := split $raw "|" }}
 
 {{ if lt (len $parts) 2 }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil (printf "You must separate the title and description with a `|`.\nExample: `%ssuggest Goth Grinch | The Grinch dressed in dramatic goth style.`" .ServerPrefix) }}
 	{{ deleteMessage nil $m 8 }}
 	{{ return }}
@@ -46,24 +46,33 @@
 {{ $desc := trimSpace (slice $parts 1 | joinStr "|" | trimSpace) }}
 
 {{ if or (not $title) (not $desc) }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil (printf "Both a title and description are required.\nExample: `%ssuggest Goth Grinch | The Grinch dressed in dramatic goth style.`" .ServerPrefix) }}
 	{{ deleteMessage nil $m 8 }}
 	{{ return }}
 {{ end }}
 
 {{ if gt (len $title) 200 }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil "Post title too long. Keep it under 200 characters." }}
 	{{ deleteMessage nil $m 5 }}
 	{{ return }}
 {{ end }}
 
 {{ if gt (len $desc) 1500 }}
+	{{ deleteTrigger 0 }}
 	{{ $m := sendMessageRetID nil "Description too long. Keep it under 1500 characters." }}
 	{{ deleteMessage nil $m 5 }}
 	{{ return }}
 {{ end }}
 
-{{ $embed := cembed
+{{/* Check for an attached image */}}
+{{ $imageURL := "" }}
+{{ with .Message.Attachments }}
+	{{ $imageURL = (index . 0).URL }}
+{{ end }}
+
+{{ $embedArgs := sdict
 	"title" $title
 	"description" $desc
 	"author" (sdict "name" .User.Username "icon_url" (.User.AvatarURL "256"))
@@ -71,14 +80,28 @@
 	"color" $EMBED_COLOR
 	"timestamp" currentTime
 }}
+{{ if $imageURL }}
+	{{ $embedArgs.Set "image" (sdict "url" $imageURL) }}
+{{ end }}
 
-{{ $msgID := sendMessageRetID $SUGGESTIONS_CHANNEL $embed }}
+{{ $msgID := sendMessageRetID $SUGGESTIONS_CHANNEL (cembed $embedArgs) }}
 {{ addMessageReactions $SUGGESTIONS_CHANNEL $msgID $SUGGESTION_EMOJI }}
 
-{{ dbSet 0 (printf "ic_prompt_%d" $msgID) (sdict
+{{ $dbEntry := sdict
 	"title" $title
 	"desc" $desc
 	"authorID" (str .User.ID)
 	"msgID" (str $msgID)
 	"channelID" (str $SUGGESTIONS_CHANNEL)
-) }}
+}}
+{{ if $imageURL }}
+	{{ $dbEntry.Set "imageURL" $imageURL }}
+{{ end }}
+{{ dbSet 0 (printf "ic_prompt_%d" $msgID) $dbEntry }}
+
+{{/* Delete trigger last -- delay when image attached so Discord caches the CDN URL for the embed */}}
+{{ if $imageURL }}
+	{{ deleteTrigger 5 }}
+{{ else }}
+	{{ deleteTrigger 0 }}
+{{ end }}

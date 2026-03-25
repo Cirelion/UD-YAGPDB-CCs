@@ -19,11 +19,6 @@
 {{ $VOTING_HOURS := 24 }}           {{/* Hours the voting window stays open (used for Tallied timestamp) */}}
 {{/* ========== END CONFIGURATION ========== */}}
 
-{{/* Check if a submission phase is already running */}}
-{{ if (dbGet 0 "ic_active_sub") }}
-	{{ return }}
-{{ end }}
-
 {{/* Get all prompt suggestions */}}
 {{ $prompts := dbGetPattern 0 "ic_prompt_%" 100 0 }}
 {{ if not $prompts }}
@@ -107,16 +102,24 @@
 
 {{ $timing := printf "Started    <t:%d:R>\nEnding    <t:%d:R>\nTallied    <t:%d:R>" $startUnix $endUnix $talliedUnix }}
 
-{{/* Forum post body: opening + description only (rules go in a follow-up) */}}
-{{ $postBody := $opening }}
+{{/* Forum post: opening + description, with optional prompt image as embed */}}
+{{ $postText := $opening }}
 {{ if $challengeBody }}
-	{{ $postBody = printf "%s\n\n%s" $opening $challengeBody }}
+	{{ $postText = printf "%s\n\n%s" $opening $challengeBody }}
 {{ end }}
-{{ if gt (len $postBody) 2000 }}
-	{{ $postBody = slice $postBody 0 1997 | printf "%s..." }}
+{{ if gt (len $postText) 2000 }}
+	{{ $postText = slice $postText 0 1997 | printf "%s..." }}
 {{ end }}
 
-{{ $thread := createForumPost $FORUM_CHANNEL $threadTitle $postBody $threadOpts }}
+{{ $promptImage := "" }}
+{{ with $bestPrompt.imageURL }}{{ $promptImage = str . }}{{ end }}
+
+{{ $postContent := $postText }}
+{{ if $promptImage }}
+	{{ $postContent = complexMessage "content" $postText "embed" (cembed "image" (sdict "url" $promptImage) "color" $EMBED_COLOR) }}
+{{ end }}
+
+{{ $thread := createForumPost $FORUM_CHANNEL $threadTitle $postContent $threadOpts }}
 
 {{/* Post rules and timing as a follow-up in the thread */}}
 {{ $rulesAndTiming := printf "%s\n\n%s" $rules $timing }}
