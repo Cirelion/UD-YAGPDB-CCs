@@ -2,15 +2,19 @@
 	Image Contest -- Reaction Guard
 	Trigger Type: Reaction
 	Trigger: Added Only
-	Restriction: Optionally restrict to your contest forum channel via CC group.
+	Restriction: Restrict to contest forum channel via CC group.
 
-	Two jobs:
-	  1. Submission phase: removes ALL reactions to prevent early voting.
-	  2. Voting phase: removes self-votes (reacting to your own submission).
+	- Winners/suggestions threads: remove ALL reactions
+	- Contest threads (voting phase): only allow vote emojis on submissions, block self-votes
+	- Contest threads (any other phase or ended): remove ALL reactions
 */}}
 
 {{/* ========== CONFIGURATION ========== */}}
 {{ $FORUM_CHANNEL := 1482642684832256031 }}
+{{ $WINNERS_THREAD := 1482692349896167588 }}
+{{ $SUGGESTIONS_THREAD := 1482647243730321611 }}
+{{ $GENERAL_THREAD := 1482646763449094248 }}
+{{ $VOTE_EMOJIS := cslice "❤️" }}
 {{/* ========== END CONFIGURATION ========== */}}
 
 {{/* Skip bot reactions */}}
@@ -19,36 +23,64 @@
 {{/* Only act in threads within the contest forum */}}
 {{ if ne .Channel.ParentID $FORUM_CHANNEL }}{{ return }}{{ end }}
 
-{{/* Get this thread's contest state */}}
-{{ $tState := sdict }}
-{{ with (dbGet 0 (printf "ic_thread_%d" .Channel.ID)).Value }}{{ $tState = sdict . }}{{ end }}
-{{ $phase := "" }}
-{{ with $tState.Get "phase" }}{{ $phase = str . }}{{ end }}
-
-{{/* Only act during submission or voting phase */}}
-{{ if and (ne $phase "submission") (ne $phase "voting") }}{{ return }}{{ end }}
-
 {{/* Build emoji string for removal */}}
 {{ $emoji := .Reaction.Emoji.Name }}
 {{ if .Reaction.Emoji.ID }}
 	{{ $emoji = printf "%s:%d" .Reaction.Emoji.Name .Reaction.Emoji.ID }}
 {{ end }}
 
-{{/* Submission phase: remove ALL reactions */}}
-{{ if eq $phase "submission" }}
+{{/* General discussion: allow all reactions */}}
+{{ if eq .Channel.ID $GENERAL_THREAD }}{{ return }}{{ end }}
+
+{{/* Winners and suggestions threads: remove all reactions */}}
+{{ if or (eq .Channel.ID $WINNERS_THREAD) (eq .Channel.ID $SUGGESTIONS_THREAD) }}
 	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
-	{{ $m := sendMessageRetID nil (printf "<@%d>, voting hasn't opened yet -- reactions are disabled during the submission phase." .User.ID) }}
-	{{ deleteMessage nil $m 6 }}
 	{{ return }}
 {{ end }}
 
-{{/* Voting phase: remove self-votes */}}
-{{ $subs := sdict }}
-{{ with (dbGet 0 (printf "ic_subs_%d" .Channel.ID)).Value }}{{ $subs = sdict . }}{{ end }}
-{{ $uid := str .User.ID }}
-{{ $entry := $subs.Get $uid }}
-{{ if and $entry (eq (str (sdict $entry).msgID) (str .Reaction.MessageID)) }}
+{{/* Contest threads: check phase */}}
+{{ $tState := sdict }}
+{{ with (dbGet 0 (printf "ic_thread_%d" .Channel.ID)).Value }}{{ $tState = sdict . }}{{ end }}
+{{ $phase := "" }}
+{{ with $tState.Get "phase" }}{{ $phase = str . }}{{ end }}
+
+{{/* Voting phase: only allow vote emojis on submission messages */}}
+{{ if eq $phase "voting" }}
+	{{/* Check if emoji is a valid vote emoji */}}
+	{{ $voteNames := cslice }}
+	{{ range $VOTE_EMOJIS }}
+		{{- $voteNames = $voteNames.Append (index (split . ":") 0) -}}
+	{{ end }}
+	{{ $isVoteEmoji := in $voteNames .Reaction.Emoji.Name }}
+
+	{{/* Check if message is a submission */}}
+	{{ $subs := sdict }}
+	{{ with (dbGet 0 (printf "ic_subs_%d" .Channel.ID)).Value }}{{ $subs = sdict . }}{{ end }}
+	{{ $isSubmission := false }}
+	{{ range $uid, $data := $subs }}
+		{{- if eq (str (sdict $data).msgID) (str $.Reaction.MessageID) }}{{ $isSubmission = true }}{{ end -}}
+	{{ end }}
+
+	{{/* Allow vote emoji on a submission (unless self-vote) */}}
+	{{ if and $isVoteEmoji $isSubmission }}
+		{{ $uid := str .User.ID }}
+		{{ $entry := $subs.Get $uid }}
+		{{ if and $entry (eq (str (sdict $entry).msgID) (str .Reaction.MessageID)) }}
+			{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+			{{ $m := sendMessageRetID nil (printf "<@%d>, you can't vote for your own submission." .User.ID) }}
+			{{ deleteMessage nil $m 6 }}
+		{{ end }}
+		{{ return }}
+	{{ end }}
+
+	{{/* Not a vote emoji or not a submission -- remove it */}}
 	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
-	{{ $m := sendMessageRetID nil (printf "<@%d>, you can't vote for your own submission." .User.ID) }}
+	{{ return }}
+{{ end }}
+
+{{/* Any other phase (submission, ended, or no state): remove ALL reactions */}}
+{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+{{ if eq $phase "submission" }}
+	{{ $m := sendMessageRetID nil (printf "<@%d>, voting hasn't opened yet -- reactions are disabled during the submission phase." .User.ID) }}
 	{{ deleteMessage nil $m 6 }}
 {{ end }}
