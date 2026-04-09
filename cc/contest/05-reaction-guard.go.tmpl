@@ -32,8 +32,21 @@
 {{/* General discussion: allow all reactions */}}
 {{ if eq .Channel.ID $GENERAL_THREAD }}{{ return }}{{ end }}
 
-{{/* Winners and suggestions threads: remove all reactions */}}
-{{ if or (eq .Channel.ID $WINNERS_THREAD) (eq .Channel.ID $SUGGESTIONS_THREAD) }}
+{{/* Winners thread: remove ALL reactions (no voting there) */}}
+{{ if eq .Channel.ID $WINNERS_THREAD }}
+	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+	{{ return }}
+{{ end }}
+
+{{/* Suggestions channel: allow vote emojis, remove everything else */}}
+{{ if eq .Channel.ID $SUGGESTIONS_THREAD }}
+	{{ $voteNames := cslice }}
+	{{ range $VOTE_EMOJIS }}
+		{{- $voteNames = $voteNames.Append (index (split . ":") 0) -}}
+	{{ end }}
+	{{ if in $voteNames .Reaction.Emoji.Name }}
+		{{ return }}
+	{{ end }}
 	{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
 	{{ return }}
 {{ end }}
