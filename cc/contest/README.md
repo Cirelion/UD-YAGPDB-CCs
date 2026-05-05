@@ -35,6 +35,7 @@ Contests can overlap: when a submission phase ends and voting begins, the next d
 - **Suggestions Channel** -- Where users run `-suggest`. The bot needs Send Messages, Add Reactions, and Manage Messages. All non-bot messages are auto-deleted to keep it clean.
 - **Winners Channel** -- Where winner announcements are posted.
 - **General Discussion Channel** -- Where text-only posters are redirected during contests. Can be a channel or thread.
+- **NSFW Requests Channel** -- Where the topic announcement is cross-posted so members without the NSFW role still see it.
 - **Contest Winner Role** -- A role for winners. Must be below YAGPDB's role in the hierarchy.
 
 ### 2. Create a CC Group
@@ -49,20 +50,21 @@ Create each CC in order. **Write down each CC's ID as you go** -- CC2 needs CC3'
 
 Every CC has a `CONFIGURATION` section at the top. Fill in the channel/role IDs:
 
-| Variable | Used In | Description |
-|----------|---------|-------------|
-| `$SUGGESTIONS_CHANNEL` | CC 1, 2, 3, 4 | Suggestions channel ID |
-| `$FORUM_CHANNEL` | CC 2, 4, 5 | Contest forum channel ID |
-| `$GENERAL_DISCUSSION_CHANNEL` | CC 4 | Channel/thread ID for general discussion redirect |
-| `$PHASE_HANDLER_CC_ID` | CC 2 | The CC ID of CC 3 (the phase handler) |
-| `$WINNERS_CHANNEL` | CC 3 | Winners announcement channel ID |
-| `$WINNER_ROLE_ID` | CC 3 | Contest winner role ID |
-| `$ROLE_DURATION_DAYS` | CC 3 | Days the winner role lasts (default: 3) |
-| `$VOTE_EMOJIS` | CC 3 | Emojis for voting (default: heart) |
-| `$SUGGESTION_EMOJI` | CC 1, 2 | Emoji for voting on suggestions (default: heart) |
-| `$SUBMISSION_HOURS` | CC 2 | Submission window in hours (default: 24) |
-| `$VOTING_HOURS` | CC 2, 3 | Voting window in hours (default: 24) |
-| `$MOD_ROLES` | CC 4, 6 | cslice of mod/admin role IDs |
+| Variable                      | Used In       | Description                                                      |
+|-------------------------------|---------------|------------------------------------------------------------------|
+| `$SUGGESTIONS_CHANNEL`        | CC 1, 2, 3, 4 | Suggestions channel ID                                           |
+| `$FORUM_CHANNEL`              | CC 2, 4, 5    | Contest forum channel ID                                         |
+| `$GENERAL_DISCUSSION_CHANNEL` | CC 2, 4       | Channel/thread ID for general discussion redirect and cross-post |
+| `$NSFW_REQUESTS_CHANNEL`      | CC 2          | Channel ID where the topic announcement is cross-posted          |
+| `$PHASE_HANDLER_CC_ID`        | CC 2          | The CC ID of CC 3 (the phase handler)                            |
+| `$WINNERS_CHANNEL`            | CC 3          | Winners announcement channel ID                                  |
+| `$WINNER_ROLE_ID`             | CC 3          | Contest winner role ID                                           |
+| `$ROLE_DURATION_DAYS`         | CC 3          | Days the winner role lasts (default: 3)                          |
+| `$VOTE_EMOJIS`                | CC 3          | Emojis for voting (default: heart)                               |
+| `$SUGGESTION_EMOJI`           | CC 1, 2       | Emoji for voting on suggestions (default: heart)                 |
+| `$SUBMISSION_HOURS`           | CC 2          | Submission window in hours (default: 24)                         |
+| `$VOTING_HOURS`               | CC 2, 3       | Voting window in hours (default: 24)                             |
+| `$MOD_ROLES`                  | CC 4, 6       | cslice of mod/admin role IDs                                     |
 
 ### 5. Channel Restrictions
 
@@ -99,6 +101,7 @@ When it fires:
 8. Schedules CC3's `open_voting` action after the submission window
 9. Deletes the winning prompt's suggestion (embed + DB entry)
 10. Posts a 24h self-deleting announcement in the suggestions channel
+11. Cross-posts the topic announcement to the NSFW requests channel using the same green announcement embed (replacing the description with links to the suggestions channel, contest thread, and general discussion thread)
 
 The forum post body and rules are split into two messages to stay within Discord's 2000 character limit, allowing longer prompt descriptions.
 

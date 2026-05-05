@@ -11,6 +11,8 @@
 {{/* ========== CONFIGURATION ========== */}}
 {{ $FORUM_CHANNEL := 1482642684832256031 }}
 {{ $SUGGESTIONS_CHANNEL := 1482647243730321611 }}
+{{ $GENERAL_DISCUSSION_CHANNEL := 1482646763449094248 }}
+{{ $NSFW_REQUESTS_CHANNEL := 1012494851188731985 }}
 {{ $PHASE_HANDLER_CC_ID := 10 }}
 {{ $SUGGESTION_EMOJI := "❤️" }}
 {{ $CONTEST_TAG := "" }}            {{/* Optional: forum tag name to apply (empty to skip) */}}
@@ -164,3 +166,16 @@
 	"timestamp" currentTime
 ) }}
 {{ deleteMessage $SUGGESTIONS_CHANNEL $announceMsgID 86400 }}
+
+{{/* Cross-post topic announcement to NSFW requests channel using the same embed style with the cross-post description */}}
+{{ sendMessage $NSFW_REQUESTS_CHANNEL (cembed
+	"title" "Today's Prompt Has Been Selected!"
+	"description" (printf "Today's community challenge topic has been selected\nSuggested by <@%s> in <#%d>\n\n<#%d>\n\n<#%d>"
+		(str $bestPrompt.authorID)
+		$SUGGESTIONS_CHANNEL
+		$thread.ID
+		$GENERAL_DISCUSSION_CHANNEL
+	)
+	"color" 0x2ECC71
+	"timestamp" currentTime
+) }}
