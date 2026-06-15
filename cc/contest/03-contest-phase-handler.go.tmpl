@@ -41,8 +41,11 @@
 
 	{{ range $uid, $data := $subs }}
 		{{- $msgID := toInt (sdict $data).msgID -}}
-		{{- range $VOTE_EMOJIS -}}
-			{{- addMessageReactions $threadID $msgID . -}}
+		{{- try -}}
+			{{- range $VOTE_EMOJIS -}}
+				{{- addMessageReactions $threadID $msgID . -}}
+			{{- end -}}
+		{{- catch -}}
 		{{- end -}}
 	{{ end }}
 

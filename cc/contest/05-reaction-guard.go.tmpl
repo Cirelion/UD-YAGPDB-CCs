@@ -78,10 +78,12 @@
 	{{ if and $isVoteEmoji $isSubmission }}
 		{{ $uid := str .User.ID }}
 		{{ $entry := $subs.Get $uid }}
-		{{ if and $entry (eq (str (sdict $entry).msgID) (str .Reaction.MessageID)) }}
-			{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
-			{{ $m := sendMessageRetID nil (printf "<@%d>, you can't vote for your own submission." .User.ID) }}
-			{{ deleteMessage nil $m 6 }}
+		{{ if $entry }}
+			{{ if eq (str (sdict $entry).msgID) (str .Reaction.MessageID) }}
+				{{ deleteMessageReaction .Channel.ID .Reaction.MessageID .User.ID $emoji }}
+				{{ $m := sendMessageRetID nil (printf "<@%d>, you can't vote for your own submission." .User.ID) }}
+				{{ deleteMessage nil $m 6 }}
+			{{ end }}
 		{{ end }}
 		{{ return }}
 	{{ end }}
